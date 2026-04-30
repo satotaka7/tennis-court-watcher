@@ -1,3 +1,5 @@
 line-bot-sdk
 python-dotenv
+playwright
+jpholiday
 
