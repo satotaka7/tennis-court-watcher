@@ -8,257 +8,63 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from config import START_URL, SPORT_LABEL, PARK_LABEL, is_debug_slots
-from date_utils import seven_days_from_anchor
 from models import AvailableSlot
 
 
 def _extract_week_slots_from_page_eval() -> str:
     """Playwright の page.evaluate に渡す JS。
 
-    検索結果の週表示テーブルから **空きセル**（数字・● 等）を列→日付に紐づけ、`{ dayIso, label }[]` を返す。
-
-    現行サイトは「●」ではなく **空き面数の数字** と「x」で表記するため、それを空き判定に含める。
+    td.id="YYYYMMDD_N" と class="available" を直接使って空きスロットを抽出する。
+    ヘッダーのテキスト解析は行わない。
     """
-
     return r"""
-      (params) => {
-        const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim();
-        /** 利用日〜その翌6日まで（サイトが列に並べる順） */
-        const weekDatesFromAnchor = (params && params.weekDatesFromAnchor) || [];
-
-        /** 半角・全角数字を半角に */
+      () => {
         const toHalfDigits = (s) =>
           (s || '').replace(/[０-９]/g, (c) =>
             String.fromCharCode(c.charCodeAt(0) - 0xfee0)
           );
 
-        /**
-         * 週表示マトリックスの **単一セル** に「空き」があるか（table td 前提）。
-         * サイトの script など長文へ誤ヒットしないよう長さ上限を設ける。
-         */
-        const cellHasAvailability = (raw) => {
-          const sr = String(raw ?? '');
-          if (!sr.trim() || sr.trim().length > 24) return false;
-          const n = normalize(toHalfDigits(sr));
-          if (!n) return false;
-          if (/^[x×Ｘ]$/i.test(n)) return false;
-          if (n === '-' || n === '―' || n === 'ー' || n === '--') return false;
-          if (n.includes('●')) return true;
-          if (/^\d+$/.test(n)) return parseInt(n, 10) > 0;
+        // class="available" か、<span> に正の整数を持つセルを空きと判定
+        const isAvailable = (td) => {
+          if (td.classList.contains('available')) return true;
+          for (const span of td.querySelectorAll('span')) {
+            const t = (span.textContent || '').trim();
+            if (/^\d+$/.test(t) && parseInt(t, 10) > 0) return true;
+          }
           return false;
         };
 
-        /** ヘッダ文字列から M/D を拾って返す（年はページ側、アンカー年は呼び出し側で調整済み前提） */
-        const parseMdFromText = (t) => {
-          const n = normalize(t);
-          let m =
-            n.match(/^(\d{1,4})[/-](\d{1,2})[/-](\d{1,2})$/) ||
-            n.match(/(\d{1,2})[／/](\d{1,2})/);
-          if (!m) {
-            const mJa = n.match(/(\d{1,2})月\s*(\d{1,2})\s*日?/);
-            if (mJa) return { mm: Number(mJa[1]), dd: Number(mJa[2]) };
-            return null;
-          }
-          if (m.length === 4 && m[3]) return { yyyy: Number(m[1]), mm: Number(m[2]), dd: Number(m[3]) };
-          return { mm: Number(m[1]), dd: Number(m[2]) };
-        };
+        const results = [];
+        const seen = new Set();
 
-        const pad2 = (n) => String(n).padStart(2, '0');
+        // id="YYYYMMDD_N" を持つ全 td を対象にする
+        for (const td of document.querySelectorAll('td[id]')) {
+          const m = (td.id || '').match(/^(\d{4})(\d{2})(\d{2})_\d+$/);
+          if (!m) continue;
+          if (!isAvailable(td)) continue;
+          const dayIso = `${m[1]}-${m[2]}-${m[3]}`;
 
-        /** @type {{ dayIso?: string }} */
-        const ymdIso = (yyyy, mm, dd) => `${yyyy}-${pad2(mm)}-${pad2(dd)}`;
+          // 行の <th> から時間ラベルを取得（例: "　９時" → "9時"）
+          const tr = td.closest('tr');
+          const th = tr ? tr.querySelector('th') : null;
+          if (!th) continue;
+          const raw = toHalfDigits((th.textContent || '').replace(/\s+/g, ' ').trim());
+          const lm = raw.match(/(\d{1,2})時/);
+          if (!lm) continue;
+          const label = `${lm[1]}時`;
 
-        const resolveDayIso = (hdrText, colIndex, fallbackFromWeek) => {
-          const parsed = parseMdFromText(hdrText || '');
-          if (parsed && parsed.yyyy != null && parsed.mm != null && parsed.dd != null) {
-            return ymdIso(parsed.yyyy, parsed.mm, parsed.dd);
-          }
-          if (parsed && parsed.mm != null && parsed.dd != null && params.anchorYear != null) {
-            const yyyy = Number(params.anchorYear);
-            return ymdIso(yyyy, parsed.mm, parsed.dd);
-          }
-          if (
-            fallbackFromWeek != null &&
-            weekDatesFromAnchor[fallbackFromWeek]
-          ) {
-            return weekDatesFromAnchor[fallbackFromWeek];
-          }
-          return '';
-        };
-
-        const getCellText = (cell) => normalize(cell?.textContent || '');
-
-        const findFirstDataColumnIndex = (table) => {
-          const scanTheadCells = (cells) => {
-            for (let i = 0; i < cells.length; i++) {
-              const ht = cells[i].textContent || '';
-              if (/[\/／月]/.test(ht) || /\(\s*[日月火水木金土]\s*\)/.test(ht)) {
-                return i;
-              }
-            }
-            /** 「30」「1」… のみの日付行（tbody の空き面数と混同しないよう thead でのみ使用） */
-            const dayOnlyIdxs = [];
-            for (let i = 0; i < cells.length; i++) {
-              const stripped = normalize(
-                toHalfDigits((cells[i].textContent || '').replace(/\([^)]*\)/g, '').trim())
-              );
-              if (/^\d{1,2}$/.test(stripped)) {
-                const v = parseInt(stripped, 10);
-                if (v >= 1 && v <= 31) dayOnlyIdxs.push(i);
-              }
-            }
-            if (dayOnlyIdxs.length >= 5) return dayOnlyIdxs[0];
-            return -1;
-          };
-
-          const scanBodyCellsLoose = (cells) => {
-            for (let i = 0; i < cells.length; i++) {
-              const ht = cells[i].textContent || '';
-              if (/[\/／月]/.test(ht) || /\(\s*[日月火水木金土]\s*\)/.test(ht)) {
-                return i;
-              }
-            }
-            return -1;
-          };
-
-          const theadRows = Array.from(table.querySelectorAll('thead tr'));
-          for (const hr of theadRows) {
-            const cells = Array.from(hr.querySelectorAll('th, td'));
-            const idx = scanTheadCells(cells);
-            if (idx >= 0) return idx;
-          }
-          const fb = table.querySelector('tbody tr');
-          if (fb) {
-            const cells = Array.from(fb.querySelectorAll('th, td'));
-            const idx = scanBodyCellsLoose(cells);
-            if (idx >= 0) return idx;
-          }
-          return 1;
-        };
-
-        const getHeaderTextsForCells = (table) => {
-          const theadRows = Array.from(table.querySelectorAll('thead tr'));
-          const probeRows = theadRows.length
-            ? theadRows.slice(-3)
-            : [];
-
-          /** @type {string[]} */
-          const merged = [];
-
-          probeRows.concat([table.querySelector('tbody tr')]).forEach((row) => {
-            if (!row) return;
-            Array.from(row.querySelectorAll('th, td')).forEach((cell, ix) => {
-              const txt = getCellText(cell);
-              if (!merged[ix] && txt) merged[ix] = txt;
-              else if (!merged[ix]) merged[ix] = '';
-            });
-          });
-
-          /** @returns {string[]} */
-          return merged;
-        };
-
-        const getRowLabel = (cell) => {
-          const tr = cell.closest('tr');
-          if (!tr) return '';
-          const th = tr.querySelector('th');
-          const thText = getCellText(th);
-          if (thText) return thText;
-          const first = tr.querySelector('td');
-          return getCellText(first);
-        };
-
-        /** @returns {{ dayIso?: string }} */
-        const extractFromTable = (table) => {
-          const rows = [];
-          const firstDataCol = findFirstDataColumnIndex(table);
-          const headerTexts = getHeaderTextsForCells(table);
-
-          const cells = Array.from(table.querySelectorAll('td')).filter((td) =>
-            cellHasAvailability(td.textContent || '')
-          );
-
-          cells.forEach((td) => {
-            const ci = typeof td.cellIndex === 'number' ? td.cellIndex : -1;
-            if (ci < firstDataCol) return;
-
-            const hdr = headerTexts[ci] ? String(headerTexts[ci]) : '';
-            const weekIdx = ci - firstDataCol;
-            const dayIso =
-              resolveDayIso(hdr, ci, weekIdx) ||
-              '';
-
-            const rowLabel = getRowLabel(td);
-            const colLabelHdr = hdr;
-            const selfText = getCellText(td);
-
-            const parts = [];
-            if (rowLabel) parts.push(rowLabel);
-            if (
-              colLabelHdr &&
-              normalize(colLabelHdr) !== normalize(rowLabel)
-            )
-              parts.push(colLabelHdr);
-            const extra = normalize(toHalfDigits(selfText).replace(/●/g, ''));
-            if (/^\d+$/.test(extra)) parts.push(`空き ${extra}`);
-            else if (extra) parts.push(extra);
-            else parts.push('空き');
-
-            const label = normalize(parts.join(' '));
-            rows.push({ dayIso, label });
-          });
-          return rows;
-        };
-
-        /** 「空き」の div 総取りフォールバックはしない（ページ全体や script と誤検出する） */
-        const allTbl = Array.from(document.querySelectorAll('table')).sort(
-          (a, b) =>
-            (b.querySelectorAll('td') || []).length - (a.querySelectorAll('td') || []).length,
-        );
-
-        /** td が多く、時間帯または x/数字がある表を優先して週間マトリックスとみなす */
-        const tablesFlagged = allTbl.filter((t) => {
-          const tdList = Array.from(t.querySelectorAll('td'));
-          const tx = t.textContent || '';
-          if (tx.includes('●')) return true;
-          if (tdList.length < 10) return false;
-          let shortLike = false;
-          for (let i = 0; i < tdList.length; i++) {
-            const s = (tdList[i].textContent || '').trim();
-            if (cellHasAvailability(s)) {
-              shortLike = true;
-              break;
-            }
-            /** x / — 等のみ（空きなしセル）はマトリックスの証拠として使える */
-            if (s.length <= 4 && /^[x×Ｘ－ー―]$/iu.test(normalize(toHalfDigits(s)))) {
-              shortLike = true;
-              break;
-            }
-          }
-          if (!shortLike && /\d\s*[:：]\s*\d{2}|9\s*[:：]\s*00/.test(tx)) shortLike = true;
-          return shortLike;
-        });
-
-        /** 見つからなければ td 数最多のテーブルを1枚だけ試す（Ajax 後にヘッダが薄いとき） */
-        const tables =
-          tablesFlagged.length > 0
-            ? tablesFlagged
-            : allTbl.length > 0 && allTbl[0].querySelectorAll('td').length >= 21
-              ? [allTbl[0]]
-              : [];
-
-        /** @type {{ dayIso?: string }} */
-        let out = [];
-        for (const t of tables) {
-          out = out.concat(extractFromTable(t));
+          const key = `${dayIso}_${label}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({ dayIso, label });
         }
 
-        return out.slice(0, 200);
+        return results;
       }
     """
 
 
-def _evaluate_week_slots_everywhere(page, eval_params: dict) -> list[dict[str, str]]:
+def _evaluate_week_slots_everywhere(page) -> list[dict[str, str]]:
     """空き表が iframe 内にある場合に備え、全フレームで evaluate してマージする"""
 
     js = _extract_week_slots_from_page_eval()
@@ -272,7 +78,7 @@ def _evaluate_week_slots_everywhere(page, eval_params: dict) -> list[dict[str, s
 
     for fr in frames:
         try:
-            chunk = fr.evaluate(js, eval_params)
+            chunk = fr.evaluate(js)
         except Exception:
             continue
         if not isinstance(chunk, list):
@@ -387,16 +193,10 @@ def fetch_availability_slots(
     都立公園スポーツレクリエーション予約システムで **1回** 「利用日」を指定して検索し、
     画面上の **週表示** マトリックスから空きセル（数字・● 等）を列挙する。
 
-    通知対象のみ従来通り「土日祝」に絞る。過剰アクセスを避けるため日付ごとの検索ループは行わない。
+    通知対象は「土日祝」に絞る。過剰アクセスを避けるため日付ごとの検索ループは行わない。
     """
 
     from date_utils import is_weekend_or_holiday
-
-    week_from_anchor = seven_days_from_anchor(use_day)
-    eval_params = {
-        "weekDatesFromAnchor": [d.isoformat() for d in week_from_anchor],
-        "anchorYear": use_day.year,
-    }
 
     slots: list[AvailableSlot] = []
 
@@ -444,47 +244,41 @@ def fetch_availability_slots(
             return []
 
         try:
-            page.wait_for_timeout(1600)
             page.wait_for_load_state("domcontentloaded", timeout=20000)
         except PlaywrightTimeoutError:
             pass
 
         try:
-            # Ajax で結果表が載るまで待つ（週送りリンクが無いときはタイムアウトして続行）
-            page.get_by_text("前週", exact=False).first.wait_for(timeout=25000)
-        except Exception:
-            pass
-
-        try:
-            # 「週表示」が <details> 等で畳まれていると表が DOM に無い／空に見えることがある
-            folded = page.locator("details:not([open])").filter(
-                has=page.get_by_text("週表示", exact=False)
-            )
-            if folded.count() > 0:
-                folded.locator("summary").first.click(timeout=3000)
-                page.wait_for_timeout(400)
-        except Exception:
-            pass
-
-        try:
-            # スクショの「施設ごと」タブ：月表示側であればマトリックス用の表示に寄せる
+            # 「施設ごと」タブをクリックして週表示に切り替える
             page.locator("a, button, [role='tab']").filter(has_text="施設ごと").first.click(
                 timeout=5000
             )
-            page.wait_for_timeout(500)
         except Exception:
             pass
 
         try:
-            # 週間マトリックスは「週表示」タブ／ラジオを選ばないと <table> に載らない（td 数も少ないまま）
+            # 週表示タブに切り替える
             page.locator("a, button, label, [role='tab']").filter(
                 has_text=re.compile(r"週.?表示")
             ).first.click(timeout=5000)
-            page.wait_for_timeout(700)
         except Exception:
             pass
 
-        raw = _evaluate_week_slots_everywhere(page, eval_params)
+        try:
+            # AJAX でセルが埋まるまで待つ（週表示テーブル内に id 付き td が現れるのを確認）
+            page.wait_for_selector("#week-info td[id]", timeout=30000)
+        except PlaywrightTimeoutError:
+            pass
+
+        if is_debug_slots():
+            print(f"[DEBUG] URL: {page.url}", file=sys.stderr)
+            print(f"[DEBUG] title: {page.title()}", file=sys.stderr)
+            td_count = page.evaluate("() => document.querySelectorAll('td[id]').length")
+            avail_count = page.evaluate("() => document.querySelectorAll('td.available').length")
+            week_table = page.evaluate("() => !!document.getElementById('week-info')")
+            print(f"[DEBUG] td[id]={td_count}, td.available={avail_count}, week-info={week_table}", file=sys.stderr)
+
+        raw = _evaluate_week_slots_everywhere(page)
 
         if is_debug_slots():
             print(f"[DEBUG_SLOTS] raw_len={len(raw)} sample={raw[:8]!r}", file=sys.stderr)

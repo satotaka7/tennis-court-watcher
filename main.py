@@ -54,7 +54,7 @@ def main() -> int:
             f"【空きあり】{PARK_LABEL} / {SPORT_LABEL} "
             f"（表示週 {day0.isoformat()}〜{day6.isoformat()}・土日祝のみ通知）"
         )
-        body = format_slot_message(sorted(slots, key=lambda s: (s.day, s.label)))
+        body = format_slot_message(sorted(slots, key=lambda s: (s.day, int(s.label.rstrip('時')) if s.label.rstrip('時').isdigit() else 99)))
         message = f"{header}\n{body}"
         broadcast_text(channel_access_token=channel_access_token, text=message)
         print(f"通知を送信しました。検出: {len(slots)} 件")
