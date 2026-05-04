@@ -8,8 +8,7 @@ from config import (
     get_line_message,
     get_browser_slow_mo,
     get_tennis_available_override,
-    SPORT_LABEL,
-    PARK_LABEL,
+    load_targets,
 )
 from date_utils import str_to_bool, parse_anchor_date_from_env, seven_days_from_anchor
 from line_notifier import broadcast_text, format_slot_message
@@ -45,19 +44,33 @@ def main() -> int:
 
     use_day = parse_anchor_date_from_env()
     slow_mo_ms = get_browser_slow_mo()
+    targets = load_targets()
 
-    slots = fetch_availability_slots(use_day=use_day, slow_down_ms=slow_mo_ms)
-    if slots:
-        wk = seven_days_from_anchor(use_day)
-        day0, day6 = wk[0], wk[-1]
-        header = (
-            f"【空きあり】{PARK_LABEL} / {SPORT_LABEL} "
-            f"（表示週 {day0.isoformat()}〜{day6.isoformat()}・土日祝のみ通知）"
+    wk = seven_days_from_anchor(use_day)
+    day0, day6 = wk[0], wk[-1]
+
+    def sort_key(s):
+        return (s.day, int(s.label.rstrip('時')) if s.label.rstrip('時').isdigit() else 99)
+
+    sections = []
+    total = 0
+    for park_label, sport_label in targets:
+        slots = fetch_availability_slots(
+            use_day=use_day,
+            slow_down_ms=slow_mo_ms,
+            park_label=park_label,
+            sport_label=sport_label,
         )
-        body = format_slot_message(sorted(slots, key=lambda s: (s.day, int(s.label.rstrip('時')) if s.label.rstrip('時').isdigit() else 99)))
-        message = f"{header}\n{body}"
+        if slots:
+            body = format_slot_message(sorted(slots, key=sort_key))
+            sections.append(f"■ {park_label} / {sport_label}\n{body}")
+            total += len(slots)
+
+    if sections:
+        header = f"【空きあり】（表示週 {day0.isoformat()}〜{day6.isoformat()}・土日祝のみ通知）"
+        message = header + "\n\n" + "\n\n".join(sections)
         broadcast_text(channel_access_token=channel_access_token, text=message)
-        print(f"通知を送信しました。検出: {len(slots)} 件")
+        print(f"通知を送信しました。検出: {total} 件")
         return 0
 
     print("空きなし。通知しません。")

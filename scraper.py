@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from config import START_URL, SPORT_LABEL, PARK_LABEL, is_debug_slots
+from config import START_URL, is_debug_slots
 from models import AvailableSlot
 
 
@@ -188,6 +188,8 @@ def fetch_availability_slots(
     *,
     use_day: date,
     slow_down_ms: int = 0,
+    park_label: str,
+    sport_label: str,
 ) -> list[AvailableSlot]:
     """
     都立公園スポーツレクリエーション予約システムで **1回** 「利用日」を指定して検索し、
@@ -208,7 +210,11 @@ def fetch_availability_slots(
         page.set_default_navigation_timeout(30000)
 
         def goto_home() -> None:
-            page.goto(START_URL, wait_until="domcontentloaded")
+            try:
+                page.goto(START_URL, wait_until="domcontentloaded")
+            except Exception as e:
+                if "Download is starting" not in str(e):
+                    raise
             # ホームから「施設の予約」を開く（テキストが変わっても動くよう複数候補）。
             for selector in [
                 "text=施設の予約",
@@ -226,8 +232,8 @@ def fetch_availability_slots(
         filled = _fill_date_input(page, use_day)
 
         try:
-            _select_option_in_any_select(page, option_label=SPORT_LABEL)
-            _select_option_in_any_select(page, option_label=PARK_LABEL)
+            _select_option_in_any_select(page, option_label=sport_label)
+            _select_option_in_any_select(page, option_label=park_label)
         except Exception:
             context.close()
             browser.close()
