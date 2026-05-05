@@ -2,7 +2,7 @@
 
 import re
 import sys
-from datetime import date, timedelta
+from datetime import date
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
