@@ -1,15 +1,7 @@
 name: テニスコート空き確認
 
 on:
-  schedule:
-    - cron: '0 0 * * *'   # JST 9:00
-    - cron: '0 2 * * *'   # JST 11:00
-    - cron: '0 4 * * *'   # JST 13:00
-    - cron: '0 6 * * *'   # JST 15:00
-    - cron: '0 8 * * *'   # JST 17:00
-    - cron: '0 10 * * *'  # JST 19:00
-    - cron: '0 12 * * *'  # JST 21:00
-  workflow_dispatch:          # GitHub画面から手動実行も可能
+  workflow_dispatch:
 
 jobs:
   check:
