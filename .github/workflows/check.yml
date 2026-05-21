@@ -20,20 +20,8 @@ jobs:
       - name: 依存ライブラリをインストール
         run: pip install -r requirements.txt
 
-      - name: Playwright ブラウザのキャッシュを復元
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ hashFiles('requirements.txt') }}
-
-      - name: Playwright ブラウザをインストール（キャッシュミス時のみ）
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - name: Playwright ブラウザをインストール
         run: python -m playwright install chromium --with-deps
-
-      - name: Playwright システム依存をインストール（キャッシュヒット時）
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: python -m playwright install-deps chromium
 
       - name: 空き確認・LINE通知
         env:
