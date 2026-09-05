@@ -1,6 +1,7 @@
 """墨田区公共施設予約システムのスクレイパー"""
 
 import sys
+import traceback
 from datetime import date
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
@@ -75,16 +76,18 @@ def fetch_availability_slots_sumida(*, slow_down_ms: int = 0) -> list[AvailableS
             page.wait_for_load_state("networkidle")
 
             # 2. 「利用目的から探す」タブ → 屋外スポーツが表示されるまで待機
-            page.locator("li.tab-name:has-text('利用目的から探す')").first.click()
-            page.get_by_text("屋外スポーツ", exact=True).first.wait_for(state="visible")
+            tab = page.locator("li.tab-name:has-text('利用目的から探す')").first
+            tab.wait_for(state="visible", timeout=20000)
+            tab.click()
+            page.get_by_text("屋外スポーツ", exact=True).first.wait_for(state="visible", timeout=20000)
 
             # 3. 屋外スポーツ → 硬式テニスが表示されるまで待機
             page.get_by_text("屋外スポーツ", exact=True).first.click()
-            page.get_by_text("硬式テニス", exact=True).first.wait_for(state="visible")
+            page.get_by_text("硬式テニス", exact=True).first.wait_for(state="visible", timeout=20000)
 
             # 4. 硬式テニス → 検索ボタンが表示されるまで待機
             page.get_by_text("硬式テニス", exact=True).first.click()
-            page.get_by_role("button", name="検索").first.wait_for(state="visible")
+            page.get_by_role("button", name="検索").first.wait_for(state="visible", timeout=20000)
 
             # 5. 検索 → 施設選択ページへ遷移
             page.get_by_role("button", name="検索").first.click()
@@ -225,6 +228,12 @@ async (batch) => {
                             redirect_url = urljoin(selectdays_url, redirect_url)
                         page.goto(redirect_url)
                         page.wait_for_load_state("networkidle", timeout=20000)
+                        # Vue が時間帯コンポーネントを描画するまで待機
+                        # networkidle だけでは Vue の非同期描画が未完了な場合がある
+                        try:
+                            page.wait_for_selector(".events-group", timeout=10000)
+                        except Exception:
+                            pass  # 全コートが満員の場合は要素が存在しないこともある
 
                         raw = page.evaluate(_JS_EXTRACT_TIME_SLOTS)
                         print(f"[sumida] バッチ{batch_num} 抽出スロット数: {len(raw)}", file=sys.stdout)
@@ -255,6 +264,7 @@ async (batch) => {
 
         except Exception as e:
             print(f"[sumida] スクレイピングエラー: {e}", file=sys.stdout)
+            print(traceback.format_exc(), file=sys.stdout)
         finally:
             context.close()
             browser.close()
