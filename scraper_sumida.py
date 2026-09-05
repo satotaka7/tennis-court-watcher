@@ -68,12 +68,20 @@ def fetch_availability_slots_sumida(*, slow_down_ms: int = 0) -> list[AvailableS
         context = browser.new_context(locale="ja-JP")
         page = context.new_page()
         page.set_default_timeout(15000)
-        page.set_default_navigation_timeout(30000)
+        page.set_default_navigation_timeout(60000)
 
         try:
-            # 1. ホーム
-            page.goto(START_URL)
-            page.wait_for_load_state("networkidle")
+            # 1. ホーム（応答が遅い場合があるので最大2回試行）
+            for attempt in range(2):
+                try:
+                    page.goto(START_URL, timeout=60000)
+                    page.wait_for_load_state("networkidle", timeout=60000)
+                    break
+                except Exception as nav_err:
+                    if attempt == 1:
+                        raise
+                    print(f"[sumida] ホーム取得リトライ: {nav_err}", file=sys.stdout)
+                    page.wait_for_timeout(5000)
 
             # 2. 「利用目的から探す」タブ → 屋外スポーツが表示されるまで待機
             tab = page.locator("li.tab-name:has-text('利用目的から探す')").first
