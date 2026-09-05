@@ -9,10 +9,12 @@ from config import (
     get_browser_slow_mo,
     get_tennis_available_override,
     load_targets,
+    is_sumida_enabled,
 )
 from date_utils import str_to_bool, parse_anchor_date_from_env, seven_days_from_anchor
 from line_notifier import broadcast_text, format_slot_message
 from scraper import fetch_availability_slots
+from scraper_sumida import fetch_availability_slots_sumida
 
 
 def check_tennis_court_availability() -> bool:
@@ -65,6 +67,13 @@ def main() -> int:
             body = format_slot_message(sorted(slots, key=sort_key))
             sections.append(f"■ {park_label} / {sport_label}\n{body}")
             total += len(slots)
+
+    if is_sumida_enabled():
+        sumida_slots = fetch_availability_slots_sumida(slow_down_ms=slow_mo_ms)
+        if sumida_slots:
+            body = format_slot_message(sorted(sumida_slots, key=lambda s: (s.day, s.label)))
+            sections.append(f"■ 墨田区 / 硬式テニス\n{body}")
+            total += len(sumida_slots)
 
     if sections:
         header = f"【空きあり】（表示週 {day0.isoformat()}〜{day6.isoformat()}・土日祝のみ通知）"

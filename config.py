@@ -22,6 +22,7 @@ ENV_KEY_SEARCH_ANCHOR_DATE = "SEARCH_ANCHOR_DATE"
 ENV_KEY_BROWSER_SLOW_MO_MS = "BROWSER_SLOW_MO_MS"
 ENV_KEY_DEBUG_SLOTS = "DEBUG_SLOTS"
 ENV_KEY_TENNIS_AVAILABLE_OVERRIDE = "TENNIS_AVAILABLE_OVERRIDE"
+ENV_KEY_SUMIDA_ENABLED = "SUMIDA_ENABLED"
 
 
 def load_env() -> None:
@@ -56,6 +57,11 @@ def is_debug_slots() -> bool:
 def get_tennis_available_override() -> str | None:
     """テスト用オーバーライド値を返す"""
     return os.getenv(ENV_KEY_TENNIS_AVAILABLE_OVERRIDE)
+
+
+def is_sumida_enabled() -> bool:
+    """墨田区テニスコートの監視を有効にするか"""
+    return os.getenv(ENV_KEY_SUMIDA_ENABLED, "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 def load_targets() -> list[tuple[str, str]]:
